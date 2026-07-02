@@ -91,17 +91,32 @@ defmodule Workslot do
   @doc """
   Stable dev-server port.
 
-  `PORT` wins when set; otherwise `4000` outside a worktree and a deterministic `4001..4999`
-  hashed from the worktree's full path (so a given worktree always boots on the same port, and
-  distinct worktrees rarely collide). Raises if `PORT` is set but is not an integer in
-  `1..65535`.
+  `PORT` wins when set; otherwise `4000` outside a worktree and a deterministic port hashed from
+  the worktree's full path (so a given worktree always boots on the same port, and distinct
+  worktrees rarely collide).
+
+  The worktree port lands in an inclusive band that defaults to `4001..4999`. Set
+  `WORKSLOT_PORT_RANGE="<from>-<to>"` to move it into a different band — assign one band per
+  project or company folder (via direnv or a shell profile) and every worktree under that folder
+  hashes into its own slice, e.g. `WORKSLOT_PORT_RANGE=10000-10999`. Choose a slice that avoids
+  any fixed service ports living in the wider band (a Postgres on `15432` stays clear of
+  `10000-10999`).
+
+  Raises if `PORT` is set but is not an integer in `1..65535`, or if `WORKSLOT_PORT_RANGE` is set
+  but is not `"<from>-<to>"` with `1 <= from <= to <= 65535`.
   """
   @spec dev_port(Path.t(), pos_integer()) :: pos_integer()
   def dev_port(root \\ File.cwd!(), default \\ 4000) do
     cond do
-      port = System.get_env("PORT") -> parse_port!(port)
-      slug(root) -> 4001 + :erlang.phash2(root, 999)
-      true -> default
+      port = System.get_env("PORT") ->
+        parse_port!(port)
+
+      slug(root) ->
+        {from, to} = port_range()
+        from + :erlang.phash2(root, to - from + 1)
+
+      true ->
+        default
     end
   end
 
@@ -264,6 +279,30 @@ defmodule Workslot do
       _ ->
         raise "workslot: PORT=#{inspect(value)} must be an integer in 1..65535. " <>
                 "Unset it, or set PORT to a valid port (e.g. PORT=4500)."
+    end
+  end
+
+  # Inclusive {from, to} band the worktree dev port hashes into. Defaults to 4001..4999; override
+  # per project/company with WORKSLOT_PORT_RANGE="<from>-<to>" so each folder's worktrees occupy a
+  # distinct slice, clear of any fixed service ports in that band.
+  defp port_range do
+    case System.get_env("WORKSLOT_PORT_RANGE") do
+      nil -> {4001, 4999}
+      value -> parse_range!(value)
+    end
+  end
+
+  defp parse_range!(value) do
+    with [from, to] <- value |> String.split("-", parts: 2) |> Enum.map(&String.trim/1),
+         {from, ""} <- Integer.parse(from),
+         {to, ""} <- Integer.parse(to),
+         true <- from in 1..65535 and to in 1..65535 and from <= to do
+      {from, to}
+    else
+      _ ->
+        raise ~s|workslot: WORKSLOT_PORT_RANGE=#{inspect(value)} must be "<from>-<to>" with | <>
+                "1 <= from <= to <= 65535 (e.g. WORKSLOT_PORT_RANGE=10000-10999). " <>
+                "Unset it to use the default 4001-4999."
     end
   end
 end

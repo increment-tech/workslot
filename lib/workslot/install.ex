@@ -52,12 +52,22 @@ defmodule Workslot.Install do
       suffix(root) <> (System.get_env("MIX_TEST_PARTITION") || "")
     end
 
-    @doc "Stable dev port: PORT wins; else 4000 outside a worktree, 4001..4999 hashed from the path."
+    @doc """
+    Stable dev port: PORT wins; else 4000 outside a worktree, and inside a worktree a port hashed
+    from the path into an inclusive band (default 4001..4999). Set WORKSLOT_PORT_RANGE="<from>-<to>"
+    (e.g. per project/company folder) to move that band, e.g. "10000-10999".
+    """
     def dev_port(root \\ File.cwd!(), default \\ 4000) do
       cond do
-        port = System.get_env("PORT") -> parse_port!(port)
-        slug(root) -> 4001 + :erlang.phash2(root, 999)
-        true -> default
+        port = System.get_env("PORT") ->
+          parse_port!(port)
+
+        slug(root) ->
+          {from, to} = port_range()
+          from + :erlang.phash2(root, to - from + 1)
+
+        true ->
+          default
       end
     end
 
@@ -87,6 +97,30 @@ defmodule Workslot.Install do
         _ ->
           raise "workslot: PORT=#{inspect(value)} must be an integer in 1..65535. " <>
                   "Unset it, or set PORT to a valid port (e.g. PORT=4500)."
+      end
+    end
+
+    # Inclusive {from, to} band the worktree dev port hashes into. Defaults to 4001..4999; override
+    # per project/company with WORKSLOT_PORT_RANGE="<from>-<to>" so each folder's worktrees occupy a
+    # distinct slice, clear of any fixed service ports in that band.
+    defp port_range do
+      case System.get_env("WORKSLOT_PORT_RANGE") do
+        nil -> {4001, 4999}
+        value -> parse_range!(value)
+      end
+    end
+
+    defp parse_range!(value) do
+      with [from, to] <- value |> String.split("-", parts: 2) |> Enum.map(&String.trim/1),
+           {from, ""} <- Integer.parse(from),
+           {to, ""} <- Integer.parse(to),
+           true <- from in 1..65535 and to in 1..65535 and from <= to do
+        {from, to}
+      else
+        _ ->
+          raise ~s|workslot: WORKSLOT_PORT_RANGE=#{inspect(value)} must be "<from>-<to>" with | <>
+                  "1 <= from <= to <= 65535 (e.g. WORKSLOT_PORT_RANGE=10000-10999). " <>
+                  "Unset it to use the default 4001-4999."
       end
     end
   end

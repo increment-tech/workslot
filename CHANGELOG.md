@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `WORKSLOT_PORT_RANGE="<from>-<to>"` — band the worktree dev port into a custom inclusive range
+  instead of the default `4001..4999`. Set it per project or company folder (e.g. via direnv) so
+  each folder's worktrees hash into their own slice — `10000-10999`, `20000-20999`, … — and pick a
+  slice that avoids fixed service ports in the wider band (a Postgres on `15432` stays clear of
+  `10000-10999`). The main checkout still stays on `4000` and an explicit `PORT` still wins; a
+  malformed range fails fast with a clear message. Honored identically by the runtime `Workslot`
+  module and the vendored `config/worktree.exs`.
+
 ## [0.1.0] - 2026-06-23
 
 ### Added

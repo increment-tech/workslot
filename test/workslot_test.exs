@@ -175,6 +175,72 @@ defmodule WorkslotTest do
     end
   end
 
+  describe "dev_port WORKSLOT_PORT_RANGE band" do
+    test "places the worktree port inside the configured inclusive range" do
+      dir = worktree_dir("banded")
+      System.put_env("WORKSLOT_PORT_RANGE", "10000-10999")
+      on_exit(fn -> System.delete_env("WORKSLOT_PORT_RANGE") end)
+
+      p = Workslot.dev_port(dir)
+      assert p in 10000..10999
+      # deterministic for the same path
+      assert Workslot.dev_port(dir) == p
+    end
+
+    test "a one-port range pins every worktree to that single port" do
+      dir = worktree_dir("single")
+      System.put_env("WORKSLOT_PORT_RANGE", "12345-12345")
+      on_exit(fn -> System.delete_env("WORKSLOT_PORT_RANGE") end)
+      assert Workslot.dev_port(dir) == 12345
+    end
+
+    test "the main checkout ignores the range and stays on 4000" do
+      dir = main_dir("mainband")
+      System.put_env("WORKSLOT_PORT_RANGE", "10000-10999")
+      on_exit(fn -> System.delete_env("WORKSLOT_PORT_RANGE") end)
+      assert Workslot.dev_port(dir) == 4000
+    end
+
+    test "PORT still wins over the range" do
+      dir = worktree_dir("portwins")
+      System.put_env("WORKSLOT_PORT_RANGE", "10000-10999")
+      System.put_env("PORT", "4555")
+
+      on_exit(fn ->
+        System.delete_env("WORKSLOT_PORT_RANGE")
+        System.delete_env("PORT")
+      end)
+
+      assert Workslot.dev_port(dir) == 4555
+    end
+
+    test "raises a clear error on a malformed range" do
+      dir = worktree_dir("badrange")
+      System.put_env("WORKSLOT_PORT_RANGE", "10000..10999")
+      on_exit(fn -> System.delete_env("WORKSLOT_PORT_RANGE") end)
+
+      assert_raise RuntimeError, ~r/WORKSLOT_PORT_RANGE=.* must be/, fn ->
+        Workslot.dev_port(dir)
+      end
+    end
+
+    test "raises when from > to" do
+      dir = worktree_dir("inverted")
+      System.put_env("WORKSLOT_PORT_RANGE", "10999-10000")
+      on_exit(fn -> System.delete_env("WORKSLOT_PORT_RANGE") end)
+
+      assert_raise RuntimeError, ~r/1 <= from <= to/, fn -> Workslot.dev_port(dir) end
+    end
+
+    test "raises when an endpoint is out of the 1..65535 range" do
+      dir = worktree_dir("oob")
+      System.put_env("WORKSLOT_PORT_RANGE", "10000-70000")
+      on_exit(fn -> System.delete_env("WORKSLOT_PORT_RANGE") end)
+
+      assert_raise RuntimeError, ~r/WORKSLOT_PORT_RANGE/, fn -> Workslot.dev_port(dir) end
+    end
+  end
+
   describe "test_suffix" do
     test "composes the worktree suffix with MIX_TEST_PARTITION" do
       dir = worktree_dir("part")
@@ -307,6 +373,24 @@ defmodule WorkslotTest do
       dir = worktree_with_base("badport")
       System.put_env("PORT", "xyz")
       on_exit(fn -> System.delete_env("PORT") end)
+
+      assert_raise RuntimeError, fn -> Workslot.dev_port(dir) end
+      assert_raise RuntimeError, fn -> apply(vendored, :dev_port, [dir]) end
+    end
+
+    test "both honor WORKSLOT_PORT_RANGE identically", %{vendored: vendored} do
+      dir = worktree_with_base("bandparity")
+      System.put_env("WORKSLOT_PORT_RANGE", "20000-20999")
+      on_exit(fn -> System.delete_env("WORKSLOT_PORT_RANGE") end)
+
+      assert apply(vendored, :dev_port, [dir]) == Workslot.dev_port(dir)
+      assert Workslot.dev_port(dir) in 20000..20999
+    end
+
+    test "both raise on a malformed WORKSLOT_PORT_RANGE", %{vendored: vendored} do
+      dir = worktree_with_base("badrangeparity")
+      System.put_env("WORKSLOT_PORT_RANGE", "nope")
+      on_exit(fn -> System.delete_env("WORKSLOT_PORT_RANGE") end)
 
       assert_raise RuntimeError, fn -> Workslot.dev_port(dir) end
       assert_raise RuntimeError, fn -> apply(vendored, :dev_port, [dir]) end
