@@ -64,6 +64,33 @@ location-agnostic, and the safe default is *don't isolate*.
 The test-DB suffix composes with `MIX_TEST_PARTITION`, so CI partitioning still works inside
 any single checkout. `PORT` always wins for the dev port when set.
 
+### Banding the dev port by project or company
+
+By default the worktree dev port hashes into `4001..4999`. Set `WORKSLOT_PORT_RANGE="<from>-<to>"`
+to move that band — every worktree hashes into the band you give, deterministically. This suits a
+workhorse machine that runs several projects (or clients) at once and wants each one's ports kept
+in its own range:
+
+```bash
+# company-1/.envrc   (direnv), or any per-folder shell profile
+export WORKSLOT_PORT_RANGE=10000-10999   # company-2 → 20000-20999, etc.
+```
+
+Because your repos live *inside* the company folder, one `.envrc` at the folder level covers every
+repo and every worktree under it — each worktree still gets its own stable port, just inside that
+company's band. Pick a slice that steers clear of any fixed service ports in the wider range: if
+Postgres sits at `15432` inside company 1's `10000-19999`, give Workslot `10000-10999` (or any
+sub-range that excludes `15432`) so its app ports never land on the database.
+
+`WORKSLOT_PORT_RANGE` only bands the *worktree* dev port; the main checkout stays on `4000`, and an
+explicit `PORT` still overrides everything. A malformed range (not `"<from>-<to>"` with
+`1 ≤ from ≤ to ≤ 65535`) fails fast with a clear message rather than silently falling back.
+
+> Workslot only bands the app dev-server port. The Postgres server port, Redis, and docker service
+> ports are yours to manage (e.g. `PGPORT` in the same `.envrc`, per-company docker-compose port
+> mappings); Workslot only sets the dev/test database *names*, which stay isolated per worktree
+> regardless of the port band.
+
 The **database name** comes from the worktree's folder name — readable, survives moving the
 folder, and naturally separated across apps by the app prefix. The **dev port** is hashed from
 the full path instead, because a port is a machine-global resource with no app namespacing, so
@@ -142,9 +169,15 @@ non-default config shape is reported as a precise manual step rather than guesse
 
      def dev_port(root \\ File.cwd!(), default \\ 4000) do
        cond do
-         port = System.get_env("PORT") -> parse_port!(port)
-         slug(root) -> 4001 + :erlang.phash2(root, 999)
-         true -> default
+         port = System.get_env("PORT") ->
+           parse_port!(port)
+
+         slug(root) ->
+           {from, to} = port_range()
+           from + :erlang.phash2(root, to - from + 1)
+
+         true ->
+           default
        end
      end
 
@@ -173,6 +206,29 @@ non-default config shape is reported as a precise manual step rather than guesse
          _ ->
            raise "workslot: PORT=#{inspect(value)} must be an integer in 1..65535. " <>
                    "Unset it, or set PORT to a valid port (e.g. PORT=4500)."
+       end
+     end
+
+     # Inclusive {from, to} band the worktree dev port hashes into. Defaults to 4001..4999;
+     # override per project/company with WORKSLOT_PORT_RANGE="<from>-<to>" (e.g. "10000-10999").
+     defp port_range do
+       case System.get_env("WORKSLOT_PORT_RANGE") do
+         nil -> {4001, 4999}
+         value -> parse_range!(value)
+       end
+     end
+
+     defp parse_range!(value) do
+       with [from, to] <- value |> String.split("-", parts: 2) |> Enum.map(&String.trim/1),
+            {from, ""} <- Integer.parse(from),
+            {to, ""} <- Integer.parse(to),
+            true <- from in 1..65535 and to in 1..65535 and from <= to do
+         {from, to}
+       else
+         _ ->
+           raise ~s|workslot: WORKSLOT_PORT_RANGE=#{inspect(value)} must be "<from>-<to>" with | <>
+                   "1 <= from <= to <= 65535 (e.g. WORKSLOT_PORT_RANGE=10000-10999). " <>
+                   "Unset it to use the default 4001-4999."
        end
      end
    end
