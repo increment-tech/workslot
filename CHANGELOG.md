@@ -15,6 +15,10 @@ All notable changes to this project are documented here. The format is based on
   `10000-10999`). The main checkout still stays on `4000` and an explicit `PORT` still wins; a
   malformed range fails fast with a clear message. Honored identically by the runtime `Workslot`
   module and the vendored `config/worktree.exs`.
+- `WORKSLOT_PORT_EXCLUDE="15432,16000-16100"` — carve fixed service ports out of the band. Accepts a
+  comma-separated list of ports and/or `<from>-<to>` ranges; the worktree port is hashed over the
+  band *minus* those, so a broad band can coexist with a Postgres, Redis, etc. living inside it.
+  Raises if an entry is malformed or if the exclusions remove every port in the band.
 
 ## [0.1.0] - 2026-06-23
 

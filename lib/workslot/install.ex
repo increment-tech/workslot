@@ -55,7 +55,8 @@ defmodule Workslot.Install do
     @doc """
     Stable dev port: PORT wins; else 4000 outside a worktree, and inside a worktree a port hashed
     from the path into an inclusive band (default 4001..4999). Set WORKSLOT_PORT_RANGE="<from>-<to>"
-    (e.g. per project/company folder) to move that band, e.g. "10000-10999".
+    (e.g. per project/company folder) to move that band, e.g. "10000-10999", and
+    WORKSLOT_PORT_EXCLUDE="15432,16000-16100" to carve fixed service ports out of it.
     """
     def dev_port(root \\ File.cwd!(), default \\ 4000) do
       cond do
@@ -63,8 +64,7 @@ defmodule Workslot.Install do
           parse_port!(port)
 
         slug(root) ->
-          {from, to} = port_range()
-          from + :erlang.phash2(root, to - from + 1)
+          worktree_port(root)
 
         true ->
           default
@@ -121,6 +121,77 @@ defmodule Workslot.Install do
           raise ~s|workslot: WORKSLOT_PORT_RANGE=#{inspect(value)} must be "<from>-<to>" with | <>
                   "1 <= from <= to <= 65535 (e.g. WORKSLOT_PORT_RANGE=10000-10999). " <>
                   "Unset it to use the default 4001-4999."
+      end
+    end
+
+    # Deterministic port for a linked worktree: hash the path into the allowed set (the configured
+    # band minus WORKSLOT_PORT_EXCLUDE). Same path -> same port while the band/exclusions hold.
+    defp worktree_port(root) do
+      {from, to} = port_range()
+      allowed = allowed_ports(from, to)
+
+      case Enum.count(allowed) do
+        0 ->
+          raise "workslot: WORKSLOT_PORT_EXCLUDE removes every port in #{from}-#{to}. " <>
+                  "Widen WORKSLOT_PORT_RANGE or drop some exclusions."
+
+        count ->
+          Enum.at(allowed, :erlang.phash2(root, count))
+      end
+    end
+
+    # from..to as an enumerable when nothing is excluded (O(1) count/at); a filtered list otherwise.
+    defp allowed_ports(from, to) do
+      excluded = excluded_ports()
+
+      if MapSet.size(excluded) == 0 do
+        from..to
+      else
+        Enum.reject(from..to, &MapSet.member?(excluded, &1))
+      end
+    end
+
+    defp excluded_ports do
+      case System.get_env("WORKSLOT_PORT_EXCLUDE") do
+        value when value in [nil, ""] ->
+          MapSet.new()
+
+        value ->
+          value
+          |> String.split(",", trim: true)
+          |> Enum.map(&String.trim/1)
+          |> Enum.reject(&(&1 == ""))
+          |> Enum.flat_map(&parse_exclude!/1)
+          |> MapSet.new()
+      end
+    end
+
+    defp parse_exclude!(token) do
+      parsed =
+        if String.contains?(token, "-") do
+          with [from, to] <- token |> String.split("-", parts: 2) |> Enum.map(&String.trim/1),
+               {from, ""} <- Integer.parse(from),
+               {to, ""} <- Integer.parse(to),
+               true <- from in 1..65535 and to in 1..65535 and from <= to do
+            Enum.to_list(from..to)
+          else
+            _ -> :error
+          end
+        else
+          case Integer.parse(token) do
+            {port, ""} when port in 1..65535 -> [port]
+            _ -> :error
+          end
+        end
+
+      case parsed do
+        :error ->
+          raise ~s|workslot: WORKSLOT_PORT_EXCLUDE entry #{inspect(token)} must be a port or | <>
+                  ~s|a "<from>-<to>" range with values in 1..65535 | <>
+                  ~s|(e.g. WORKSLOT_PORT_EXCLUDE="15432,16000-16100").|
+
+        list ->
+          list
       end
     end
   end

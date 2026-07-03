@@ -241,6 +241,76 @@ defmodule WorkslotTest do
     end
   end
 
+  describe "dev_port WORKSLOT_PORT_EXCLUDE holes" do
+    test "never lands on an excluded single port" do
+      # A one-hole band of two ports: excluding one forces the other, deterministically.
+      dir = worktree_dir("excl-single")
+      System.put_env("WORKSLOT_PORT_RANGE", "10000-10001")
+      System.put_env("WORKSLOT_PORT_EXCLUDE", "10000")
+
+      on_exit(fn ->
+        System.delete_env("WORKSLOT_PORT_RANGE")
+        System.delete_env("WORKSLOT_PORT_EXCLUDE")
+      end)
+
+      assert Workslot.dev_port(dir) == 10001
+    end
+
+    test "excludes ports and ranges anywhere in the band, over many worktrees" do
+      System.put_env("WORKSLOT_PORT_RANGE", "10000-10099")
+      System.put_env("WORKSLOT_PORT_EXCLUDE", "10050,10060-10069")
+
+      on_exit(fn ->
+        System.delete_env("WORKSLOT_PORT_RANGE")
+        System.delete_env("WORKSLOT_PORT_EXCLUDE")
+      end)
+
+      holes = MapSet.new([10050 | Enum.to_list(10060..10069)])
+
+      for i <- 1..200 do
+        p = Workslot.dev_port(worktree_dir("excl-#{i}"))
+        assert p in 10000..10099
+        refute MapSet.member?(holes, p)
+      end
+    end
+
+    test "is deterministic for the same path with exclusions applied" do
+      dir = worktree_dir("excl-stable")
+      System.put_env("WORKSLOT_PORT_RANGE", "10000-10099")
+      System.put_env("WORKSLOT_PORT_EXCLUDE", "10000-10050")
+
+      on_exit(fn ->
+        System.delete_env("WORKSLOT_PORT_RANGE")
+        System.delete_env("WORKSLOT_PORT_EXCLUDE")
+      end)
+
+      p = Workslot.dev_port(dir)
+      assert p in 10051..10099
+      assert Workslot.dev_port(dir) == p
+    end
+
+    test "raises when the exclusions empty out the band" do
+      dir = worktree_dir("excl-empty")
+      System.put_env("WORKSLOT_PORT_RANGE", "10000-10009")
+      System.put_env("WORKSLOT_PORT_EXCLUDE", "10000-10009")
+
+      on_exit(fn ->
+        System.delete_env("WORKSLOT_PORT_RANGE")
+        System.delete_env("WORKSLOT_PORT_EXCLUDE")
+      end)
+
+      assert_raise RuntimeError, ~r/removes every port/, fn -> Workslot.dev_port(dir) end
+    end
+
+    test "raises a clear error on a malformed exclusion entry" do
+      dir = worktree_dir("excl-bad")
+      System.put_env("WORKSLOT_PORT_EXCLUDE", "15432,notaport")
+      on_exit(fn -> System.delete_env("WORKSLOT_PORT_EXCLUDE") end)
+
+      assert_raise RuntimeError, ~r/WORKSLOT_PORT_EXCLUDE entry/, fn -> Workslot.dev_port(dir) end
+    end
+  end
+
   describe "test_suffix" do
     test "composes the worktree suffix with MIX_TEST_PARTITION" do
       dir = worktree_dir("part")
@@ -394,6 +464,22 @@ defmodule WorkslotTest do
 
       assert_raise RuntimeError, fn -> Workslot.dev_port(dir) end
       assert_raise RuntimeError, fn -> apply(vendored, :dev_port, [dir]) end
+    end
+
+    test "both apply WORKSLOT_PORT_EXCLUDE identically", %{vendored: vendored} do
+      dir = worktree_with_base("exclparity")
+      System.put_env("WORKSLOT_PORT_RANGE", "20000-20099")
+      System.put_env("WORKSLOT_PORT_EXCLUDE", "20000-20050,20075")
+
+      on_exit(fn ->
+        System.delete_env("WORKSLOT_PORT_RANGE")
+        System.delete_env("WORKSLOT_PORT_EXCLUDE")
+      end)
+
+      p = Workslot.dev_port(dir)
+      assert apply(vendored, :dev_port, [dir]) == p
+      assert p in 20051..20099
+      assert p != 20075
     end
   end
 
