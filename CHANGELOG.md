@@ -20,6 +20,13 @@ All notable changes to this project are documented here. The format is based on
   prints the per-invocation `-c` override to use inside a worktree. Skips cleanly when a CLI/dep is absent.
 - `Workslot.Install.patch_mise/1` — the pure, idempotent `mise.toml` transform behind the browser wiring.
 
+### Fixed
+
+- `mix workslot.install` aborted with `Code.LoadError … config/worktree.exs … enoent` on real apps: Igniter
+  validates the patched config by **evaluating** it (which runs the newly-added `Code.require_file`) before
+  the staged `config/worktree.exs` is flushed to disk. The installer now writes `config/worktree.exs`
+  eagerly (idempotent; never clobbers) before the config patches, so validation resolves the require.
+
 ## [0.1.0] - 2026-06-23
 
 ### Added
