@@ -31,6 +31,12 @@ port — so both agents can migrate, reseed, `mix ecto.reset`, run the suite, an
 the same time without touching each other's state. Run `mix workslot` in any of them to see where
 it lives.
 
+Using coding agents? `mix workslot.agents.install` layers on **agent-tooling** isolation too: a per-worktree
+agent-browser profile (in `mise.toml` `[env]`) so two agents never share one Chrome, and — for apps that use
+Tidewave — a `workslot.agents` step (added to your `mix setup`) that points each worktree's Claude Code /
+Codex at its own Tidewave dev MCP. (`--no-browser` / `--no-tidewave` to pick; core `mix workslot.install`
+stays agent-agnostic.) See `mix help workslot.agents.install`.
+
 ## Quick start
 
 ```bash

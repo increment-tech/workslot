@@ -215,6 +215,40 @@ defmodule Workslot.Install do
     end
   end
 
+  # The per-worktree agent-browser env, keyed on the checkout's folder name — mise resolves
+  # `{{config_root | basename}}` per worktree, so every worktree (and every repo) gets its own Chrome
+  # profile and two parallel coding agents never share one browser. Tool-agnostic: no app name, no
+  # company. Just the three `AGENT_BROWSER_*` keys agent-browser reads.
+  @browser_marker "AGENT_BROWSER_PROFILE"
+  @mise_env_lines ~S'''
+  # workslot: per-worktree browser isolation — each git worktree/repo gets its own agent-browser profile.
+  AGENT_BROWSER_PROFILE = "{{env.HOME}}/.agent-browser/profiles/{{config_root | basename}}"
+  AGENT_BROWSER_SESSION = "{{config_root | basename}}"
+  AGENT_BROWSER_SCREENSHOT_DIR = "{{env.HOME}}/AgentRuns/{{config_root | basename}}/screenshots"
+  '''
+
+  @doc """
+  Add the per-worktree agent-browser env to `mise.toml`, idempotently. If an `[env]` table already exists
+  the keys are inserted into it; otherwise a new `[env]` block is appended. A no-op once
+  `AGENT_BROWSER_PROFILE` is present. Returns `{new_content, manual_edits}` like `patch_dev/2`.
+  """
+  @spec patch_mise(String.t()) :: {String.t(), [String.t()]}
+  def patch_mise(content) do
+    lines = String.trim_trailing(@mise_env_lines)
+
+    cond do
+      String.contains?(content, @browser_marker) ->
+        {content, []}
+
+      # Insert into an existing [env] table, right after its header line (TOML forbids a second [env]).
+      Regex.match?(~r/^\[env\][^\n]*\n/m, content) ->
+        {Regex.replace(~r/^\[env\][^\n]*\n/m, content, "\\0#{lines}\n", global: false), []}
+
+      true ->
+        {String.trim_trailing(content) <> "\n\n[env]\n" <> @mise_env_lines, []}
+    end
+  end
+
   # Apply `pattern -> replacement` once, unless already migrated (marker present). Threads a
   # `{content, manual_edits}` accumulator and records a manual-edit note when the anchor is gone.
   defp step({content, manual}, pattern, replacement, marker, manual_note) do
