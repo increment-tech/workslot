@@ -67,6 +67,9 @@ if Code.ensure_loaded?(Igniter) do
           dev server port are derived from the worktree. Run `mix workslot` to get this
           worktree's DB names and port before connecting to the database or hitting the
           server — don't assume <app>_dev or port 4000.
+
+      Want per-worktree browser + Tidewave MCP isolation too (Claude Code / Codex)?
+      Run `mix workslot.agents.install`.
       """)
     end
 

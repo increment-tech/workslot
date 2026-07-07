@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`mix workslot.agents.install`** — opt-in, per-worktree **coding-agent** isolation layered on top of the
+  core DB/port install (`mix workslot.install` stays unchanged and agent-agnostic). Two file patches
+  (`--no-browser` / `--no-tidewave` to pick):
+  - a per-worktree **agent-browser** profile in `mise.toml` `[env]` (keyed on `{{config_root | basename}}`),
+    so parallel agents never share one Chrome profile;
+  - a `workslot.agents` step added to the app's `mix setup` alias.
+- **`mix workslot.agents`** — the runtime step the installer wires in: points this worktree's **Claude Code**
+  and **Codex** at its own Tidewave dev MCP (`/tidewave/mcp` on the worktree's port). Claude uses `local`
+  scope (per-project-path, private); Codex's config is global, so it registers only on the main checkout and
+  prints the per-invocation `-c` override to use inside a worktree. Skips cleanly when a CLI/dep is absent.
+- `Workslot.Install.patch_mise/1` — the pure, idempotent `mise.toml` transform behind the browser wiring.
+
 ## [0.1.0] - 2026-06-23
 
 ### Added
