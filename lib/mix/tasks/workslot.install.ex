@@ -45,6 +45,7 @@ if Code.ensure_loaded?(Igniter) do
     @impl Igniter.Mix.Task
     def igniter(igniter) do
       app = to_string(Igniter.Project.Application.app_name(igniter))
+      ensure_worktree_exs_on_disk()
 
       igniter
       |> Igniter.create_new_file("config/worktree.exs", Install.worktree_exs(), on_exists: :skip)
@@ -71,6 +72,21 @@ if Code.ensure_loaded?(Igniter) do
       Want per-worktree browser + Tidewave MCP isolation too (Claude Code / Codex)?
       Run `mix workslot.agents.install`.
       """)
+    end
+
+    # Write config/worktree.exs to disk BEFORE the config patches. config/dev.exs is patched (below) to
+    # `Code.require_file` it, and Igniter validates the patched config by EVALUATING it during finalization —
+    # which raises `enoent` if the vendored file isn't on disk yet (`create_new_file` stages it, but the eval
+    # can run before that write is flushed). Writing it eagerly makes the require resolvable at validation
+    # time; it is idempotent (skipped when present, so it never clobbers a user's edits) and the staged
+    # `create_new_file` above then no-ops.
+    defp ensure_worktree_exs_on_disk do
+      path = "config/worktree.exs"
+
+      unless File.exists?(path) do
+        File.mkdir_p!("config")
+        File.write!(path, Install.worktree_exs())
+      end
     end
 
     # Run a pure {content, manual_edits} transform over an existing config file. Missing files
