@@ -35,9 +35,10 @@ defmodule WorkslotTest do
     dir
   end
 
+  # The gitdir points inside `dir`, so anything the vendored module records stays in the temp tree.
   defp make_worktree(dir, name) do
     File.mkdir_p!(dir)
-    File.write!(Path.join(dir, ".git"), "gitdir: /repo/.git/worktrees/#{name}\n")
+    File.write!(Path.join(dir, ".git"), "gitdir: #{dir}/.repo/.git/worktrees/#{name}\n")
     dir
   end
 
@@ -357,6 +358,55 @@ defmodule WorkslotTest do
       {out, manual} = Workslot.Install.patch_test(plain, "my_app")
       assert manual == []
       assert out =~ ~s|database: "my_app_test\#{Workslot.Worktree.test_suffix()}"|
+    end
+
+    test "every Repo on the shared database is isolated, not just the first" do
+      two = """
+      import Config
+
+      config :my_app, MyApp.Repo, database: "my_app_dev"
+      config :my_app, MyApp.EventsRepo, database: "my_app_dev"
+      """
+
+      # (no Endpoint in this fixture, so the port note is expected)
+      {out, _port_note} = Workslot.Install.patch_dev(two, "my_app")
+
+      assert length(String.split(out, ~s|database: "my_app_dev\#{Workslot.Worktree.suffix()}"|)) ==
+               3
+
+      refute out =~ ~s|database: "my_app_dev"|
+
+      {test_out, []} =
+        Workslot.Install.patch_test(String.replace(two, "_dev", "_test"), "my_app")
+
+      refute test_out =~ ~s|database: "my_app_test"|
+    end
+
+    test "re-running finishes an install that isolated only the first Repo" do
+      # what 0.1.0 left behind: the first Repo patched, the second still on the shared database
+      half = """
+      import Config
+
+      config :my_app, MyApp.Repo, database: "my_app_dev\#{Workslot.Worktree.suffix()}"
+      config :my_app, MyApp.EventsRepo, database: "my_app_dev"
+      """
+
+      {out, _port_note} = Workslot.Install.patch_dev(half, "my_app")
+      refute out =~ ~s|database: "my_app_dev"|
+
+      test_half = """
+      import Config
+
+      config :my_app, MyApp.Repo, database: "my_app_test\#{Workslot.Worktree.test_suffix()}"
+      config :my_app, MyApp.EventsRepo, database: "my_app_test\#{System.get_env("MIX_TEST_PARTITION")}"
+      config :my_app, MyApp.AuditRepo, database: "my_app_test"
+      """
+
+      {test_out, []} = Workslot.Install.patch_test(test_half, "my_app")
+      refute test_out =~ "MIX_TEST_PARTITION"
+      refute test_out =~ ~s|database: "my_app_test"|
+
+      assert length(String.split(test_out, "Workslot.Worktree.test_suffix()")) == 4
     end
 
     test "patches are idempotent" do

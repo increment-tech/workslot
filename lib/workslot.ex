@@ -57,16 +57,21 @@ defmodule Workslot do
   """
   @spec slug(Path.t()) :: String.t() | nil
   def slug(root \\ File.cwd!()) do
-    if worktree?(root) do
-      cleaned =
-        root
-        |> Path.basename()
-        |> String.downcase()
-        |> String.replace(~r/[^a-z0-9]+/, "_")
-        |> String.trim("_")
+    if worktree?(root), do: folder_slug(root)
+  end
 
-      if cleaned == "", do: "wt" <> hash36(root), else: cleaned
-    end
+  @doc false
+  # The slug a worktree at `root` derives, without checking that `root` is one. `mix workslot.clean`
+  # uses it for every worktree git lists, so one whose `.git` is unreadable still counts as live.
+  def folder_slug(root) do
+    cleaned =
+      root
+      |> Path.basename()
+      |> String.downcase()
+      |> String.replace(~r/[^a-z0-9]+/, "_")
+      |> String.trim("_")
+
+    if cleaned == "", do: "wt" <> hash36(root), else: cleaned
   end
 
   @doc ~S'Database-name suffix: `""` outside a worktree, `"_<slug>"` in a linked worktree.'
@@ -229,14 +234,29 @@ defmodule Workslot do
     """
   end
 
-  defp live_worktrees(root) do
-    case System.cmd("git", ["-C", root, "worktree", "list", "--porcelain"],
+  @doc false
+  # The paths of the repo's worktrees as git records them, the main checkout first.
+  def live_worktrees(root) do
+    # -z (git 2.36+): NUL-terminated fields, so a path containing a newline cannot split into two
+    # entries. An older git rejects the flag; its newline-separated output (paths printed raw) is the
+    # fallback, where such a path splits — a worktree like that is protected by its record alone.
+    with :error <- worktree_list(root, ["-z"], <<0>>) do
+      worktree_list(root, [], "\n")
+    end
+  rescue
+    # System.cmd/3 raises only when the `git` executable is absent; let any other error surface.
+    ErlangError -> :error
+  end
+
+  # stderr is captured, not printed: this runs at every dev boot from config/runtime.exs.
+  defp worktree_list(root, flags, separator) do
+    case System.cmd("git", ["-C", root, "worktree", "list", "--porcelain" | flags],
            stderr_to_stdout: true
          ) do
       {out, 0} ->
         paths =
           out
-          |> String.split("\n")
+          |> String.split(separator)
           |> Enum.flat_map(fn
             "worktree " <> path -> [path]
             _ -> []
@@ -247,9 +267,6 @@ defmodule Workslot do
       _ ->
         :error
     end
-  rescue
-    # System.cmd/3 raises only when the `git` executable is absent; let any other error surface.
-    ErlangError -> :error
   end
 
   defp hash36(root) do

@@ -16,6 +16,29 @@ defmodule Workslot.ConfigReader do
 
   def database(_), do: nil
 
+  @doc "The first entry `repos/1` finds (the app's Repo), or `nil`."
+  @spec repo(keyword() | nil) :: keyword() | nil
+  def repo(app_config), do: app_config |> repos() |> List.first()
+
+  @doc """
+  Every config entry that is a Repo's options: it carries a string `:database`, or a database `url:`
+  (`ecto://`, `postgres://`, `postgresql://`). An Endpoint's `url:` is a keyword list, and a Redis or
+  API `url:` has another scheme, so neither matches.
+  """
+  @spec repos(keyword() | nil) :: [keyword()]
+  def repos(app_config) when is_list(app_config) do
+    for {_mod, opts} <- app_config, Keyword.keyword?(opts), repo?(opts), do: opts
+  end
+
+  def repos(_), do: []
+
+  defp repo?(opts), do: is_binary(opts[:database]) or database_url?(opts[:url])
+
+  defp database_url?(url) when is_binary(url),
+    do: String.starts_with?(url, ["ecto://", "postgres://", "postgresql://"])
+
+  defp database_url?(_url), do: false
+
   @doc "The `http: [port: _]` from whichever config entry carries one (the Endpoint), or `nil`."
   @spec http_port(keyword() | nil) :: pos_integer() | nil
   def http_port(app_config) when is_list(app_config) do

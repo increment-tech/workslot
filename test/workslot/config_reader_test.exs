@@ -22,4 +22,33 @@ defmodule Workslot.ConfigReaderTest do
     assert ConfigReader.database([{MyApp.Mailer, [adapter: Swoosh.Adapters.Local]}]) == nil
     assert ConfigReader.http_port([{MyApp.Repo, [database: "x"]}]) == nil
   end
+
+  test "repo/1 returns the Repo's options, by :database or by a string url — never the Endpoint" do
+    assert ConfigReader.repo(@app_config)[:pool_size] == 10
+
+    url_only = [
+      {MyAppWeb.Endpoint, [url: [host: "localhost"], http: [port: 4000]]},
+      {MyApp.Repo, [url: "postgres://localhost/my_app_dev"]}
+    ]
+
+    assert ConfigReader.repo(url_only) == [url: "postgres://localhost/my_app_dev"]
+    assert ConfigReader.repo([{MyAppWeb.Endpoint, [url: [host: "x"]]}]) == nil
+  end
+
+  test "repos/1 returns every Repo and skips a url: of another kind" do
+    config = [
+      {:redis, [url: "redis://localhost:6379"]},
+      {MyApp.Api, [url: "https://api.example.com"]},
+      {MyApp.Repo, [database: "my_app_dev"]},
+      {MyApp.EventsRepo, [url: "ecto://u:p@localhost/my_app_events_dev"]},
+      {:not_a_keyword, [1, 2]}
+    ]
+
+    assert ConfigReader.repos(config) == [
+             [database: "my_app_dev"],
+             [url: "ecto://u:p@localhost/my_app_events_dev"]
+           ]
+
+    assert ConfigReader.repo(config) == [database: "my_app_dev"]
+  end
 end

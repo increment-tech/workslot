@@ -5,47 +5,6 @@ Nothing in this file is committed work — it's a parking lot.
 
 ---
 
-## `mix workslot.clean` — drop orphaned worktree databases
-
-**The problem.** `workslot` only ever *computes* database names; it never creates or
-drops anything. So when you delete a git worktree (`git worktree remove ...`), its dev/test
-databases keep sitting in Postgres forever. Over time you accumulate orphaned databases:
-`my_app_dev_feature_x`, `my_app_dev_old_spike`, `my_app_test_abandoned_branch`, … none of which
-map to a worktree that still exists.
-
-**The idea.** A task that lists (and optionally drops) databases belonging to worktrees that are
-gone:
-
-```bash
-mix workslot.clean            # dry run: list orphaned databases, drop nothing
-mix workslot.clean --drop     # actually drop them, after an explicit confirmation
-```
-
-**Sketch of how it could work.**
-- Ask git for the live worktrees: `git worktree list --porcelain` → set of current folder names
-  → derive the set of DB suffixes that are still "alive."
-- Ask Postgres for the actual databases matching the app's prefix
-  (`my_app_dev_*` / `my_app_test_*`).
-- The difference = orphans. Print them. With `--drop`, drop each one.
-
-**Why it's deferred / what to be careful about.**
-- This is the **first destructive thing** the library would do. Everything today is pure name
-  derivation; dropping databases is a different risk class. It must:
-  - default to a **dry run** (list only),
-  - require an explicit `--drop` flag *and* a typed confirmation,
-  - never touch the bare `my_app_dev` / `my_app_test` (the main checkout's databases),
-  - probably support `--dry-run`/`--yes` for scripting.
-- Detecting "which databases belong to this app" reliably means reading the configured DB prefix,
-  not guessing — needs the same shape-reading logic `mix workslot` already uses.
-- Connecting to Postgres to enumerate/drop databases pulls a DB driver into a library that
-  currently has **zero runtime dependencies**. Worth keeping that property; maybe shell out to
-  `psql`/`dropdb` instead of adding `postgrex`.
-
-**Verdict:** genuinely useful, but it's a feature with real blast radius. Build it deliberately,
-with safety rails, after the core correctness/test work lands.
-
----
-
 ## `mix workslot.doctor` — detect collisions and orphans (read-only)
 
 **The problem.** The library derives readable database names from the worktree folder name
@@ -55,7 +14,8 @@ surfacing but aren't prevented by the names themselves:
 - **Collisions:** two *live* checkouts whose folder names sanitize to the same slug would map to
   the same database name (e.g. `/projects/feature-x` and `/archive/feature-x` both →
   `my_app_dev_feature_x`). Silent shared data if it happens.
-- **Orphans:** databases left behind by worktrees that no longer exist (see `mix workslot.clean`).
+- **Orphans:** databases left behind by worktrees that no longer exist — `mix workslot.clean` (shipped in
+  0.2.0) already lists these; `doctor` would fold them into one report.
 
 **The idea.** A read-only diagnostic that answers "is my isolation actually clean?":
 
@@ -79,8 +39,8 @@ without making every name uglier, longer, and move-fragile.
 - Report: collisions (two live checkouts → one name), orphans (DB with no live checkout), and a
   clean ✓ when everything is distinct.
 
-**Relationship to `mix workslot.clean`:** `doctor` is the read-only diagnosis; `clean` is the
-destructive follow-up that drops orphans. `doctor` ships first and stays safe (no writes ever).
+**Relationship to `mix workslot.clean`:** `clean` (shipped) already finds and drops orphans; `doctor`
+would add the collision half and stay strictly read-only.
 
 ---
 
@@ -114,3 +74,11 @@ or missing comment.
 **Verdict:** valuable hardening for heavy worktree churn, but it changes the library's character
 from "pure name derivation" to "manages database metadata." Ship it behind an explicit opt-in
 (e.g. a config flag), after the pure boot guard has proven the collision-detection UX.
+
+**Since 0.2.0 — what the stamp would still add over the suffix registry.** `mix workslot.clean` decides
+ownership from the record `config/worktree.exs` keeps under `.git/workslot/`, which is per clone. Two
+clones of one app on one Postgres server that each have a worktree with the same folder name already
+share that database (the name carries no clone), and when one clone removes its worktree, `clean` there
+reports the shared database as its orphan; only an open connection stops the drop. A stamp naming the
+owning clone's git directory would let `clean` refuse a candidate stamped by another clone. Un-defer
+when anyone runs several clones of one app against one server.

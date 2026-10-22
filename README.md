@@ -34,7 +34,8 @@ it lives.
 Using coding agents? `mix workslot.agents.install` layers on **agent-tooling** isolation too: a per-worktree
 agent-browser profile (in `mise.toml` `[env]`) so two agents never share one Chrome, and — for apps that use
 Tidewave — a `workslot.agents` step (added to your `mix setup`) that points each worktree's Claude Code /
-Codex at its own Tidewave dev MCP. (`--no-browser` / `--no-tidewave` to pick; core `mix workslot.install`
+Codex at its own Tidewave dev MCP — plus a Claude Code `SessionStart` hook that tells the agent about the
+databases of worktrees you've removed, so it can show you the list (see [Tearing down](#tearing-down)). (`--no-browser` / `--no-tidewave` / `--no-hooks` to pick; core `mix workslot.install`
 stays agent-agnostic.) See `mix help workslot.agents.install`.
 
 ## Quick start
@@ -84,10 +85,10 @@ from Hex:
 
 ```elixir
 # from Hex
-{:workslot, "~> 0.1", only: [:dev, :test], runtime: false}
+{:workslot, "~> 0.2", only: [:dev, :test], runtime: false}
 
 # or from GitHub (pin a tag; no Hex required)
-{:workslot, github: "increment-tech/workslot", tag: "v0.1.0", only: [:dev, :test], runtime: false}
+{:workslot, github: "increment-tech/workslot", tag: "v0.2.0", only: [:dev, :test], runtime: false}
 ```
 
 ### Automatic (Igniter)
@@ -111,17 +112,36 @@ non-default config shape is reported as a precise manual step rather than guesse
 
 1. Create **`config/worktree.exs`** with the contents below. It defines a small
    `Workslot.Worktree` module and is intentionally dependency-free — build config loads it
-   before deps are compiled. (`mix workslot.install` generates this same file for you.)
+   before deps are compiled. (`mix workslot.install` generates this same file for you, and
+   upgrades a copy you have not edited when a new release changes it.) Besides deriving the
+   names it records each suffix it hands out under `.git/workslot/`, which is how
+   [`mix workslot.clean`](#tearing-down) knows what a removed worktree left behind.
 
    <details><summary><code>config/worktree.exs</code></summary>
 
    ```elixir
+   # Vendored by workslot — https://github.com/increment-tech/workslot
+   #
    # Self-contained ON PURPOSE: build config (config/dev.exs, config/test.exs) loads this via
-   # Code.require_file/2, which can run BEFORE deps are compiled on a fresh clone — so it must
-   # not depend on the workslot package. Safe to edit.
+   # `Code.require_file/2`, which can run BEFORE deps are compiled on a fresh clone — so it must
+   # not depend on the workslot package. Safe to edit: `mix workslot.install` replaces it only while
+   # it still matches a version workslot shipped, and reports an edited copy instead.
+   #
+   # Each linked git worktree auto-isolates its dev/test databases (named from the worktree's
+   # folder name) and its dev-server port (hashed from the worktree's full path). Anything that
+   # is not a linked worktree — the main working tree, a submodule, a plain directory — keeps the
+   # bare names and port 4000. Detection is name-agnostic: a linked worktree's `.git` is a FILE
+   # holding a `gitdir:` pointer into the shared repo's `.git/worktrees/` directory.
+   #
+   # Every suffix handed out is also recorded under the repository's `.git/workslot/`, so
+   # `mix workslot.clean` can tell a removed worktree's databases from anyone else's. Recording is
+   # best effort: it never fails or prints during config evaluation.
+   #
+   # This mirrors the derivation in the Workslot module; a parity test keeps them in sync.
    defmodule Workslot.Worktree do
      @moduledoc false
 
+     @doc "Sanitized worktree slug, or nil when not a linked git worktree."
      def slug(root \\ File.cwd!()) do
        if worktree?(root) do
          cleaned =
@@ -135,17 +155,23 @@ non-default config shape is reported as a precise manual step rather than guesse
        end
      end
 
+     @doc ~S'Database-name suffix: "" outside a worktree, "_<slug>" in a linked worktree.'
      def suffix(root \\ File.cwd!()) do
-       case slug(root) do
-         nil -> ""
-         slug -> "_" <> slug
-       end
+       suffix =
+         case slug(root) do
+           nil -> ""
+           slug -> "_" <> slug
+         end
+
+       register("s-", suffix, root)
      end
 
+     @doc "Test-DB suffix: the worktree suffix stacked with MIX_TEST_PARTITION."
      def test_suffix(root \\ File.cwd!()) do
-       suffix(root) <> (System.get_env("MIX_TEST_PARTITION") || "")
+       register("t-", suffix(root) <> (System.get_env("MIX_TEST_PARTITION") || ""), root)
      end
 
+     @doc "Stable dev port: PORT wins; else 4000 outside a worktree, 4001..4999 hashed from the path."
      def dev_port(root \\ File.cwd!(), default \\ 4000) do
        cond do
          port = System.get_env("PORT") -> parse_port!(port)
@@ -155,7 +181,8 @@ non-default config shape is reported as a precise manual step rather than guesse
      end
 
      # A linked worktree's gitdir is `<common>/worktrees/<id>`; a submodule's is
-     # `<super>/modules/<name>`. Require the worktrees segment and reject any modules path.
+     # `<super>/modules/<name>`, the main tree's `.git` is a directory. Require the worktrees
+     # segment and reject any modules path so only a linked worktree isolates.
      defp worktree?(root) do
        case File.read(Path.join(root, ".git")) do
          {:ok, "gitdir: " <> target} ->
@@ -164,6 +191,88 @@ non-default config shape is reported as a precise manual step rather than guesse
 
          _ ->
            false
+       end
+     end
+
+     # Record that this checkout derived `suffix` — `kind` is "s-" for suffix/1 (dev names), "t-" for
+     # test_suffix/1 (test names): one empty file per suffix in this checkout's record directory, created
+     # once and never through an existing link. A worktree's record also gets a `b-` mark for every base
+     # `mix workslot.clean` has already seen — the bases it may later claim databases through. Returns
+     # `suffix` whatever happens.
+     defp register(kind, suffix, root) do
+       with {:ok, dir} <- record_dir(root),
+            file = Path.join(dir, kind <> Base.encode16(suffix, case: :lower)),
+            false <- File.exists?(file) do
+         File.mkdir_p!(dir)
+         File.write(file, "", [:exclusive])
+         # where it was, for the listing: written aside and renamed, so a link is replaced, not followed
+         tmp = Path.join(dir, ".path-#{:os.getpid()}-#{System.unique_integer([:positive])}")
+         File.write!(tmp, Path.expand(root), [:exclusive])
+         File.rename!(tmp, Path.join(dir, "path"))
+         mark_seen_bases(dir)
+       end
+
+       suffix
+     rescue
+       _ -> suffix
+     end
+
+     # Each sighting file starts with its generation; the mark names key and generation.
+     defp mark_seen_bases(dir) do
+       bases = dir |> Path.dirname() |> Path.dirname() |> Path.join("bases")
+
+       with "worktrees" <- dir |> Path.dirname() |> Path.basename(),
+            {:ok, keys} <- File.ls(bases) do
+         for key <- keys,
+             not String.starts_with?(key, "."),
+             {:ok, content} <- [File.read(Path.join(bases, key))],
+             [generation | _names] <- [String.split(content, "\n", trim: true)] do
+           File.write(Path.join(dir, "b-" <> key <> "." <> generation), "", [:exclusive])
+         end
+       end
+     end
+
+     # `<common>/workslot/main` for the main checkout (its `.git` is a directory) and
+     # `<common>/workslot/worktrees/<id>` for a linked worktree, `<id>` being git's own name for it —
+     # but only while git's admin directory for it exists and points back at this very checkout, so a
+     # stale pointer (the repository moved) or a copied folder never records anything.
+     defp record_dir(root) do
+       git = Path.join(root, ".git")
+
+       cond do
+         File.dir?(git) ->
+           {:ok, Path.join([git, "workslot", "main"])}
+
+         worktree?(root) ->
+           {:ok, "gitdir: " <> target} = File.read(git)
+           gitdir = target |> String.trim() |> Path.expand(root)
+
+           common =
+             case File.read(Path.join(gitdir, "commondir")) do
+               {:ok, rel} -> rel |> String.trim() |> Path.expand(gitdir)
+               _ -> gitdir |> Path.dirname() |> Path.dirname()
+             end
+
+           if File.dir?(common) and points_back?(gitdir, git),
+             do: {:ok, Path.join([common, "workslot", "worktrees", Path.basename(gitdir)])},
+             else: :error
+
+         true ->
+           :error
+       end
+     end
+
+     # git's `<gitdir>/gitdir` names the worktree's `.git` file. Compare the files, not the spellings, so a
+     # symlinked path still matches and a copy of the folder does not. A file system that reports no inode
+     # (they read 0) or a hard-linked `.git` file cannot tell them apart, so neither records.
+     defp points_back?(gitdir, dot_git) do
+       with {:ok, back} <- File.read(Path.join(gitdir, "gitdir")),
+            {:ok, recorded} <- back |> String.trim() |> Path.expand(gitdir) |> File.stat(),
+            {:ok, mine} <- File.stat(dot_git) do
+         mine.inode != 0 and mine.links == 1 and
+           {recorded.major_device, recorded.inode} == {mine.major_device, mine.inode}
+       else
+         _ -> false
        end
      end
 
@@ -273,15 +382,69 @@ Rename one (or `git worktree move` it) so the names differ after sanitizing, the
 
 ## Tearing down
 
-When you're done with a worktree, drop its suffixed databases and remove it:
+Removing a worktree leaves its databases behind — the dev database *and* one test database per
+`MIX_TEST_PARTITION` it ever ran with (`my_app_test_feature_x`, `my_app_test_feature_x1`, …). Test
+databases also only grow: the SQL sandbox rolls every test back, but the index pages those rolled-back
+rows used are never handed back, so a busy worktree's test database can reach gigabytes.
 
-```bash
-cd ../my-app-feature-x
-mix ecto.drop                          # drops my_app_dev_my_app_feature_x
-MIX_ENV=test mix ecto.drop             # drops my_app_test_my_app_feature_x
-cd -
-git worktree remove ../my-app-feature-x
+`mix workslot.clean` lists what removed worktrees left behind and, when asked, drops it:
+
+```text
+$ mix workslot.clean
+workslot.clean: 3 databases left behind by removed worktrees (412 MB):
+  my_app_dev_old_spike                                   18 MB  worktree old-spike
+  my_app_test_old_spike                                 196 MB  worktree old-spike
+  my_app_test_old_spike2                                198 MB  worktree old-spike
+
+Nothing dropped. `mix workslot.clean --drop` drops the first list (after a prompt);
+`mix workslot.clean --drop NAME...` drops the databases you name from the first or last list.
+
+$ mix workslot.clean --drop                              # asks first (default no)
+$ mix workslot.clean --drop --yes my_app_test_old_spike  # unattended: name what to drop
 ```
+
+It never guesses from names. Every time the app's config is evaluated, `config/worktree.exs` records
+the database suffixes that checkout derived (dev and test apart) under the repository's
+`.git/workslot/`; a worktree that `git worktree remove` (or `git worktree prune`) removed leaves its
+record behind, and only the databases it recorded are reported as left behind. So:
+
+- the databases of a live checkout of this repository, and every Repo's own database, are never
+  reported as left behind — moved, `git worktree lock`ed (say, on an unmounted drive) and detached
+  worktrees included, and so is a database named the way workslot names one for a worktree git lists;
+- a removed worktree's record claims a database only through a base (a Repo's database name on its
+  server) that `clean` had already seen when the worktree recorded, or seen it live, and never one
+  that was already there when `clean` first saw that base. So every database that existed before
+  `clean` first ran — a main checkout's old partition copy, the databases of worktrees alive then —
+  and anything under a base renamed or moved since is unregistered at most: drop those by name. With
+  the `SessionStart` hook `clean` runs at every session, so it is watching from the start;
+- a worktree whose folder was deleted by hand is **held**: git still registers it, so its databases
+  are kept until `git worktree prune` (which `git gc` also runs on worktrees missing for three
+  months — `git worktree lock` one that lives on a removable drive);
+- databases named like this app's worktree databases that no checkout recorded — left by a
+  workslot older than 0.2.0, copied by hand (`my_app_dev_backup`), a copied worktree folder, or
+  another clone's — are listed as **unregistered** and dropped only when you name them.
+
+Until the main checkout's own `config/worktree.exs` records (re-run `mix workslot.install` after
+upgrading), `clean` does not start watching and `--drop` drops only the databases you name; a base
+that leaves the config is forgotten, and if it returns it is watched afresh. A worktree moved with a plain `mv` rather
+than `git worktree move` records nothing until `git worktree repair` (its old names stay held, its new
+ones unregistered), and on a file system that reports no inodes nothing records at all, so every
+worktree database there is unregistered — droppable only by name.
+
+Before anything is dropped the list is printed (with `--yes` too), each database is re-checked
+right before its `DROP`, and a database with an open connection is skipped (plain `DROP DATABASE`,
+never `WITH (FORCE)`). Use `--only dev` / `--only test` to restrict it.
+
+Two limits remain. Records are per clone: two clones of one app on one Postgres server whose
+worktrees share a folder name already share that database, and when one clone removes its worktree,
+`clean` there reports it as left behind — only an open connection stops the drop. And a worktree
+re-created in the instant between the last check and its `DROP` loses that one database.
+
+With Claude Code, `mix workslot.agents.install` also adds a `SessionStart` hook that runs
+`mix workslot.clean --summary`. Once the databases removed worktrees left (and held ones) pass 1 GB
+(`WORKSLOT_CLEAN_MIN_SIZE`) it prints one line telling the agent to show you the list and drop only
+what you approve, by name. Unregistered databases never trigger it and are only counted, never
+named. Below the threshold it prints nothing, and it never drops anything itself.
 
 ## License
 

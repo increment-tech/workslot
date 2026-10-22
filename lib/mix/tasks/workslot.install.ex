@@ -49,6 +49,7 @@ if Code.ensure_loaded?(Igniter) do
 
       igniter
       |> Igniter.create_new_file("config/worktree.exs", Install.worktree_exs(), on_exists: :skip)
+      |> upgrade_worktree_exs()
       |> patch("config/dev.exs", &Install.patch_dev(&1, app))
       |> patch("config/test.exs", &Install.patch_test(&1, app))
       |> patch("config/runtime.exs", &Install.patch_runtime/1)
@@ -86,6 +87,33 @@ if Code.ensure_loaded?(Igniter) do
       unless File.exists?(path) do
         File.mkdir_p!("config")
         File.write!(path, Install.worktree_exs())
+      end
+    end
+
+    # An unedited copy from an earlier release is replaced (it predates recording which databases each
+    # worktree derives, which `mix workslot.clean` relies on); an edited copy is left alone and reported.
+    defp upgrade_worktree_exs(igniter) do
+      path = "config/worktree.exs"
+
+      case Install.worktree_exs_status(File.read!(path)) do
+        :current ->
+          igniter
+
+        :outdated ->
+          igniter
+          |> Igniter.update_file(
+            path,
+            &Rewrite.Source.update(&1, :content, Install.worktree_exs())
+          )
+          |> Igniter.add_notice("workslot: upgraded config/worktree.exs (it had no local edits).")
+
+        :edited ->
+          Igniter.add_warning(igniter, """
+          workslot — config/worktree.exs has local edits, so it was left as is. If it does not record \
+          the suffixes it derives (the `register/2` calls in the current template), `mix workslot.clean` \
+          lists every worktree database as unregistered and drops one only when named. Compare it with \
+          the template in the workslot README ("Manual install") and merge by hand.\
+          """)
       end
     end
 

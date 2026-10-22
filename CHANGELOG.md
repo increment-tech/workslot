@@ -6,7 +6,44 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-22
+
 ### Added
+
+- **`mix workslot.clean`** — lists the dev/test databases that removed git worktrees left behind (every
+  `MIX_TEST_PARTITION` copy included) and, with `--drop`, drops them after a prompt that defaults to no.
+  It never judges ownership from a name:
+  - the vendored `config/worktree.exs` now records every suffix it hands out, dev and test apart, under
+    the repository's `.git/workslot/` — only while git's admin directory points back at that checkout,
+    so a copied folder or a stale pointer records nothing;
+  - a removed worktree's record claims a database only from its own kind's base on that base's server,
+    only through a base `clean` had already seen when the worktree recorded (or seen it live), and
+    never one that was already there when `clean` first saw the base (which it does only once the main
+    checkout records) — so nothing from before `clean` first watched, and nothing under a base renamed,
+    moved, or renamed away and back since, is claimed;
+  - a moved, `git worktree lock`ed or detached worktree keeps its databases, as does one named the way
+    workslot names one for a worktree git lists; one deleted by hand is *held* until
+    `git worktree prune`; databases nothing claims (an older workslot's, hand-made copies, another
+    clone's) are *unregistered* and dropped only by name; until the main checkout records, `--drop`
+    drops only named databases.
+
+  `--drop NAME...` drops exactly the named databases; `--yes` skips the prompt and requires the names.
+  The list is printed before anything is dropped, each database is re-checked right before its `DROP`,
+  and plain `DROP DATABASE` (never `WITH (FORCE)`) skips one in use. Every Repo's own database is
+  protected. `--only dev|test` restricts it, and `--summary [--min-size SIZE]` prints one line for a
+  coding agent, or nothing below the threshold (which only removed and held worktrees' databases count
+  towards; names are escaped). Known limits (per-clone records, the instant before a `DROP`) are
+  documented. Talks to Postgres through the app's own Postgrex, so workslot keeps zero runtime
+  dependencies.
+- `mix workslot.agents.install` now also vendors `.claude/hooks/workslot-clean.sh` and registers it as a
+  Claude Code `SessionStart` hook (`startup` only) in `.claude/settings.json`, keeping every existing
+  setting. Its line tells the agent to show the user the list and drop only what the user approves, by
+  name. A settings file it cannot parse is reported with the entry to add by hand, never rewritten.
+  `--no-hooks` skips it.
+- `mix workslot.install` upgrades an unedited `config/worktree.exs` from an earlier release (compared as
+  code, so a copy the app's formatter rewrote still counts) and reports an edited one instead.
+- `Workslot.Registry` (the record's read side) and `Workslot.Clean.plan/4` (the pure planning behind the
+  task).
 
 - **`mix workslot.agents.install`** — opt-in, per-worktree **coding-agent** isolation layered on top of the
   core DB/port install (`mix workslot.install` stays unchanged and agent-agnostic). Two file patches
@@ -21,6 +58,14 @@ All notable changes to this project are documented here. The format is based on
 - `Workslot.Install.patch_mise/1` — the pure, idempotent `mise.toml` transform behind the browser wiring.
 
 ### Fixed
+
+- `mix workslot.install` isolated only the first Repo on the `<app>_dev` / `<app>_test` database; an app
+  with several Repos (e.g. an events repo) left the rest on the shared database. Every match is patched
+  now, and re-running the installer finishes an install that patched only the first.
+- `Workslot.verify!/1` works on git older than 2.36 (no `worktree list -z`) instead of silently skipping
+  its collision check, and git's error output no longer reaches the terminal at dev boot.
+- `mix workslot` no longer mistakes a non-database `url:` (Redis, an API) for the Repo.
+- Compiling workslot in an env where Jason is absent (an app with Igniter only in `:dev`) no longer warns.
 
 - `mix workslot.install` aborted with `Code.LoadError … config/worktree.exs … enoent` on real apps: Igniter
   validates the patched config by **evaluating** it (which runs the newly-added `Code.require_file`) before
@@ -56,4 +101,5 @@ All notable changes to this project are documented here. The format is based on
   rather than collapsing to an empty suffix.
 - `dev_port/2` raises a clear error when `PORT` is set but is not an integer in `1..65535`.
 
+[0.2.0]: https://github.com/increment-tech/workslot/releases/tag/v0.2.0
 [0.1.0]: https://github.com/increment-tech/workslot/releases/tag/v0.1.0
